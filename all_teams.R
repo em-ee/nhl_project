@@ -4,6 +4,7 @@ library(caret)
 library(magrittr)
 library(lubridate)
 library(randomForest)
+library(boot)
 
 
 set.seed(2134)
@@ -285,15 +286,22 @@ nst_all <- nst_avg_home %>%
   select(-c(a_season:a_homeGoals, a_home_win, h_Team, a_Team))
 
 ############## NST MODEL CREATION - LOGISTIC ##################
-  
-model_data <- nst_all %>%
-  select(-c(h_awayGoals, h_homeGoals, h_TOI, a_TOI, h_gameDate, h_season))
 
 model_train <- nst_all %>%
+  mutate_at(scale, .vars = vars(-c(h_season:h_homeGoals, h_home_win)))%>%
+  mutate_if(is.character, as.factor)%>%
   filter(h_season != 2018)
 
 model_test <- nst_all %>%
+  mutate_at(scale, .vars = vars(-c(h_season:h_homeGoals, h_home_win)))%>%
+  mutate_if(is.character, as.factor)%>%
   filter(h_season == 2018)
+
+LogLossBinary = function(actual, predicted, eps = 1e-15) {
+  predicted = pmin(pmax(predicted, eps), 1-eps)
+  - (sum(actual * log(predicted) + (1 - actual) * log(1 - predicted))) / length(actual)
+}
+
 
 ##### all variables: ----
 
@@ -303,6 +311,8 @@ mod1 <- glm(h_home_win ~ .-h_awayGoals -h_homeGoals -h_TOI -a_TOI
 
 mod2 <- predict(mod1, newdata = model_test, type = "response")
 
+# warning - multicollinearity (because % and raw scores for same metric)
+
 logregm1 <- model_test %>% 
   mutate(prob = mod2)%>%
   mutate(pred_win = ifelse(prob > 0.5457317, 1, 0))%>%
@@ -310,48 +320,21 @@ logregm1 <- model_test %>%
 
 table(actual = logregm1$h_home_win, pred = logregm1$pred_win)
 
-
-# (222+488)/(222+488+367+194)
+# (541+157)/(541+157+432+141)
 # [1] 0.5586153
 
-points_pred <- logregm1 %>%
-  select(h_season:h_home_win, pred_win)%>%
-  mutate(h_actual_points = ifelse(h_home_win == 1, 2, 0),
-         a_actual_points = ifelse(h_actual_points == 2, 0, 2),
-         h_pred_points = ifelse(pred_win == 1, 2, 0), 
-         a_pred_points = ifelse(h_pred_points == 2, 0, 2))
+LogLossBinary(logregm1$h_home_win, logregm1$prob)
 
-h_points_pred <- points_pred %>%
-  select(h_season, h_gameDate, Team = h_homeTeam, 
-         actual_points = h_actual_points, pred_points = h_pred_points)
-
-
-a_points_pred <- points_pred %>%
-  select(h_season, h_gameDate, Team = h_awayTeam, 
-         actual_points = a_actual_points, pred_points = a_pred_points)
-
-points_pred <- h_points_pred %>%
-  bind_rows(a_points_pred)
-
-points_pred %>%
-  group_by(h_season, Team)%>%
-  summarise(total_pred_points = sum(pred_points), 
-            total_actual = sum(actual_points))%>%
-  filter(h_season==2018)%>%
-  arrange(desc(total_pred_points))%>%
-  print(n=Inf)
 
 ##### selected variables: -----
 
-mod3 <- glm(h_home_win ~ h_homeTeam+h_awayTeam+h_CF+h_CA+h_FF+h_FA+h_SF+
-            h_SA+h_GF+h_GA+h_xGF+h_xGA+h_SVperc+h_SHperc+h_PDO+a_CF+a_CA+
-            a_FF+a_FA+a_SF+a_SA+a_GF+a_GA+a_xGF+a_xGA+a_SVperc+a_SHperc+a_PDO,
-            data = model_train, family = "binomial")
+mod3 <- glm(h_home_win~h_awayTeam+h_CF+h_CA+h_FF+h_FA+h_SF+h_SA+h_GF+h_GA+h_xGF+h_xGA+h_SVperc+h_SHperc
+            +h_PDO+a_CF+a_CA+a_FF+a_FA+a_SF+a_SA+a_GF+a_GA+a_xGF+a_xGA+a_SVperc
+            +a_SHperc+a_PDO,data = model_train, family = "binomial")
 
 
 mod4 <- predict(mod3, newdata = model_test, type = "response")
 
-# backwards <- step(mod1) # to do feature selection
 
 logregm3 <- model_test %>% 
   mutate(prob = mod4)%>%
@@ -360,51 +343,24 @@ logregm3 <- model_test %>%
 
 table(actual = logregm3$h_home_win, pred = logregm3$pred_win)
 
-# (228+463)/(228+463+361+199)
-# [1] 0.5523581
+# (480+536)/(480+536+146+109)
+# [1] 0.559402
+
+LogLossBinary(logregm3$h_home_win, logregm3$prob)
+
+##### percentage metrics only --------
 
 
-points_pred <- logregm3 %>%
-  select(h_season:h_home_win, pred_win)%>%
-  mutate(h_actual_points = ifelse(h_home_win == 1, 2, 0),
-         a_actual_points = ifelse(h_actual_points == 2, 0, 2),
-         h_pred_points = ifelse(pred_win == 1, 2, 0), 
-         a_pred_points = ifelse(h_pred_points == 2, 0, 2))
-
-h_points_pred <- points_pred %>%
-  select(h_season, h_gameDate, Team = h_homeTeam, 
-         actual_points = h_actual_points, pred_points = h_pred_points)
-  
-
-a_points_pred <- points_pred %>%
-  select(h_season, h_gameDate, Team = h_awayTeam, 
-         actual_points = a_actual_points, pred_points = a_pred_points)
-
-points_pred <- h_points_pred %>%
-  bind_rows(a_points_pred)
-
-points_pred %>%
-  group_by(h_season, Team)%>%
-  summarise(total_pred_points = sum(pred_points), 
-            total_actual = sum(actual_points))%>%
-  filter(h_season==2018)%>%
-  arrange(desc(total_pred_points))%>%
-  print(n=Inf)
-
-
-##### percs only --------
-
-
-mod5 <- glm(h_home_win ~ h_homeTeam+h_awayTeam+h_CFperc+h_FFperc+h_SFperc+h_GFperc+
+mod5 <- glm(h_home_win ~ h_awayTeam+h_CFperc+h_FFperc+h_SFperc+h_GFperc+
             h_xGFperc+h_SCFperc+h_HDCFperc+h_HDSFperc+h_HDGFperc+h_HDSHperc+
             h_HDSVperc+h_MDCFperc+h_MDSFperc+h_MDGFperc+h_MDSHperc+h_MDSVperc+
             h_LDCFperc+h_LDSFperc+h_LDGFperc+h_LDSHperc+h_LDSVperc+h_PDO+
             a_CFperc+a_FFperc+a_SFperc+a_GFperc+a_xGFperc+a_SCFperc+a_HDCFperc+
             a_HDSFperc+a_HDGFperc+a_HDSHperc+a_HDSVperc+a_MDCFperc+a_MDSFperc+
             a_MDGFperc+a_MDSHperc+a_MDSVperc+a_LDCFperc+a_LDSFperc+a_LDGFperc+
-            a_LDSHperc+a_LDSVperc+a_PDO, data = model_train, family = "binomial")
+            a_LDSHperc+a_LDSVperc+a_PDO, data = df_2, family = "binomial")
 
-mod6 <- predict(mod5, newdata = model_test, type = "response")
+mod6 <- predict(mod5, newdata = df_2_test, type = "response")
 
 
 logregm5 <- model_test %>% 
@@ -417,8 +373,52 @@ table(actual = logregm5$h_home_win, pred = logregm5$pred_win)
 # (221+486)/(221+486+196+368)
 # [1] 0.5562549
 
-points_pred <- logregm5 %>%
-  select(h_season:h_home_win, pred_win)%>%
+LogLossBinary(logregm5$h_home_win, logregm5$prob)
+
+##### taking most significant variables from mod5: --------
+
+mod7 <- glm(h_home_win ~ h_homeTeam+h_awayTeam+h_CFperc+h_FFperc+h_GFperc+
+              h_HDGFperc+h_LDCFperc+h_PDO+a_GFperc, 
+            data = model_train, family = "binomial")
+
+mod8 <- predict(mod7, newdata = model_test, type = "response")
+
+
+logregm7 <- model_test %>% 
+  mutate(prob = mod8)%>%
+  mutate(pred_win = ifelse(prob > 0.5, 1, 0))%>%
+  select(h_season:h_homeGoals, h_home_win:pred_win, everything())
+
+table(actual = logregm7$h_home_win, pred = logregm7$pred_win)
+
+# (216+498)/(216+498+184+373)
+# [1] 0.5617624
+
+LogLossBinary(logregm7$h_home_win, logregm7$prob)
+
+##### taking most significant variables from mod3: --------
+
+mod9 <- glm(h_home_win ~ h_homeTeam+h_awayTeam+h_FA+h_GF+h_SVperc+h_SHperc+h_PDO+
+              a_SF+a_GF+a_xGA+a_SVperc+a_SHperc+a_PDO,
+            data = model_train, family = "binomial")
+
+mod10 <- predict(mod9, newdata = model_test, type = "response")
+
+
+logregm9 <- model_test %>% 
+  mutate(prob = mod10)%>%
+  mutate(pred_win = ifelse(prob > 0.5, 1, 0))%>%
+  select(h_season:h_homeGoals, h_home_win:pred_win, everything())
+
+table(actual = logregm9$h_home_win, pred = logregm9$pred_win)
+
+# (234+474)/(234+474+355+208)
+# [1] 0.5570417
+
+LogLossBinary(logregm9$h_home_win, logregm9$prob)
+
+points_pred <- logregm7 %>%
+  select(h_season:h_home_win, prob, pred_win)%>%
   mutate(h_actual_points = ifelse(h_home_win == 1, 2, 0),
          a_actual_points = ifelse(h_actual_points == 2, 0, 2),
          h_pred_points = ifelse(pred_win == 1, 2, 0), 
@@ -434,26 +434,71 @@ a_points_pred <- points_pred %>%
          actual_points = a_actual_points, pred_points = a_pred_points)
 
 points_pred <- h_points_pred %>%
-  bind_rows(a_points_pred)
+  bind_rows(a_points_pred)%>%
+  mutate(h_season = as.factor(h_season))
 
-points_pred %<>%
+points_preds <- points_pred%>%
   group_by(h_season, Team)%>%
   summarise(total_pred_points = sum(pred_points), 
             total_actual = sum(actual_points))
 
-points_pred %>%
-  group_by(h_season, Team)%>%
-  mutate(points_diff = total_actual - total_pred_points)%>%
-  ungroup()%>%
-  group_by(Team)%>%
-  summarise(m = mean(points_diff))%>%
-  print(n=Inf)
-  
+### bootstrapped points:
+
+boot_points <- function(df, sample_size) {
+  resamples <- lapply(1:sample_size, function(i) sample(df, 82, replace=TRUE))
+  points_sum <- sapply(resamples, sum)
+  list(sums=points_sum)   
+}
+
+points_boot <- points_pred %>%
+  select(-c(h_season, h_gameDate, actual_points))%>%
+  split(.$Team)%>%
+  map(~ boot_points(.[,-1], 50000))%>%
+  map_df(., ~as.data.frame(.), .id="id")
+
+
 
 ############## NST MODEL CREATION - TREE ##################
 
 
-treefit <- randomForest(as.factor(h_home_win) ~ ., data = model_train, ntree = 500,
+treefit1 <- randomForest(as.factor(h_home_win) ~ .-h_awayGoals -h_homeGoals -h_TOI -a_TOI 
+                        -h_gameDate -h_season, data = model_train, ntree = 100,
                         importance = TRUE)
+
+summary(treefit1)
+varImpPlot(treefit1)
+
+tf1 <- predict(treefit1, newdata = model_test, type = "response")
+
+
+tf2 <- model_test %>% 
+  mutate(pred_win = tf1)%>%
+  select(h_season:h_homeGoals, h_home_win:pred_win, everything())
+
+table(actual = tf2$h_home_win, pred = tf2$pred_win)
+
+##### just using most important variables from treefit1: --------
+
+
+
+treefit2 <- randomForest(as.factor(h_home_win) ~ h_awayTeam+h_homeTeam+h_GFperc+
+                           a_GFperc+h_PDO+a_PDO+h_MDSFperc, 
+                         data = model_train, ntree = 500,
+                         importance = TRUE)
+
+summary(treefit2)
+varImpPlot(treefit2)
+
+tf3 <- predict(treefit2, newdata = model_test, type = "response")
+
+
+tf4 <- model_test %>% 
+  mutate(pred_win = tf3)%>%
+  select(h_season:h_homeGoals, h_home_win:pred_win, everything())
+
+table(actual = tf4$h_home_win, pred = tf4$pred_win)
+
+
+
 
 
